@@ -313,7 +313,10 @@ api.get('/orders/mine', auth(), (req, res) => {
   const db = getDb()
   const user = findUser(req.user.id)
   runDailyAutomation(db, user, user.preferences || { foodType: 'VEG', cuisine: 'SOUTH_INDIAN' })
-  res.json({ orders: db.orders.filter((o) => o.userId === req.user.id) })
+  const mine = db.orders
+    .filter((o) => o.userId === req.user.id)
+    .map((o) => ({ ...o, rated: db.ratings.some((r) => r.orderId === o.id && r.userId === req.user.id) }))
+  res.json({ orders: mine })
 })
 
 api.get('/orders/:id', auth(), (req, res) => {
@@ -353,6 +356,17 @@ api.post('/orders/pause', auth(), (req, res) => {
   if (!sub) return res.status(400).json({ error: 'No active subscription.' })
   db.pauses.push({ userId: req.user.id, start, end })
   db.orders = db.orders.filter((o) => !(o.userId === req.user.id && o.date >= start && o.date <= end))
+  save()
+  res.json({ ok: true })
+})
+
+// Resume after a pause: clear future pauses; automation regenerates those days.
+api.post('/orders/resume', auth(), (req, res) => {
+  const db = getDb()
+  const today = todayString()
+  db.pauses = db.pauses.filter((p) => !(p.userId === req.user.id && p.end >= today))
+  const sub = db.subscriptions.find((s) => s.userId === req.user.id && s.status === 'ACTIVE')
+  if (sub) sub.status = 'ACTIVE'
   save()
   res.json({ ok: true })
 })
@@ -404,6 +418,21 @@ api.post('/orders/:id/status', auth(), (req, res) => {
   res.json({ order })
 })
 
+// Kitchen substitution (always recorded + customer is notified).
+api.post('/orders/:id/substitute', auth(), allow('KITCHEN', 'ADMIN'), (req, res) => {
+  const db = getDb()
+  const order = db.orders.find((o) => o.id === req.params.id)
+  if (!order) return res.status(404).json({ error: 'Order not found.' })
+  const { mealType, newName, reason } = req.body || {}
+  const meal = order.meals.find((m) => m.mealType === mealType)
+  if (!meal) return res.status(400).json({ error: 'Meal type not in this order.' })
+  meal.name = String(newName || meal.name)
+  meal.substituted = true
+  pushNotification(db, order.userId, '🔄', 'Meal substituted', `${meal.name} → ${newName} (${reason || 'kitchen decision'}).`)
+  save()
+  res.json({ order })
+})
+
 api.post('/orders/:id/assign', auth(), allow('ADMIN'), (req, res) => {
   const db = getDb()
   const order = db.orders.find((o) => o.id === req.params.id)
@@ -438,6 +467,16 @@ api.get('/admin/overview', auth(), allow('ADMIN'), (req, res) => {
     subscriptions: db.subscriptions,
     unavailableFoodIds: db.unavailableFoodIds
   })
+})
+
+// Admin: broadcast a notification to every user.
+api.post('/admin/broadcast', auth(), allow('ADMIN'), (req, res) => {
+  const db = getDb()
+  const { icon, title, body } = req.body || {}
+  if (!title || !body) return res.status(400).json({ error: 'Title and body are required.' })
+  for (const u of db.users) pushNotification(db, u.id, icon || '📣', String(title).slice(0, 80), String(body).slice(0, 300))
+  save()
+  res.json({ ok: true, sent: db.users.length })
 })
 
 api.put('/admin/food/:id/availability', auth(), allow('ADMIN'), (req, res) => {
@@ -487,13 +526,36 @@ function clamp5(n) {
 }
 
 // =====================================================================
+// NOTIFICATIONS (per-user inbox)
+// =====================================================================
+api.get('/notifications', auth(), (req, res) => {
+  const db = getDb()
+  const mine = db.notifications.filter((n) => n.userId === req.user.id)
+  res.json({ notifications: mine })
+})
+
+api.post('/notifications/read', auth(), (req, res) => {
+  const db = getDb()
+  for (const n of db.notifications) if (n.userId === req.user.id) n.read = true
+  save()
+  res.json({ ok: true })
+})
+
+// Customer's own payment history.
+api.get('/payments/mine', auth(), (req, res) => {
+  const db = getDb()
+  res.json({ payments: db.payments.filter((p) => p.userId === req.user.id) })
+})
+
+// =====================================================================
 // SUPPORT TICKETS
 // =====================================================================
 api.get('/tickets/mine', auth(), (req, res) => {
   const db = getDb()
-  const mine = req.user.role === 'CUSTOMER'
-    ? db.tickets.filter((t) => t.userId === req.user.id)
-    : db.tickets
+  const isStaff = req.user.role === 'ADMIN'
+  const mine = isStaff
+    ? db.tickets.map((t) => ({ ...t, customer: findUser(t.userId)?.name || 'Customer' }))
+    : db.tickets.filter((t) => t.userId === req.user.id)
   res.json({ tickets: mine })
 })
 
@@ -527,6 +589,19 @@ api.post('/tickets/:id/reply', auth(), (req, res) => {
   if (isStaff && ticket.status === 'OPEN') ticket.status = 'IN_PROGRESS'
   save()
   pushNotification(db, ticket.userId, '💬', 'Support replied', ticket.subject)
+  res.json({ ticket })
+})
+
+api.post('/tickets/:id/status', auth(), (req, res) => {
+  const db = getDb()
+  const ticket = db.tickets.find((t) => t.id === req.params.id)
+  if (!ticket) return res.status(404).json({ error: 'Ticket not found.' })
+  const isOwner = ticket.userId === req.user.id
+  if (req.user.role !== 'ADMIN' && !isOwner) return res.status(403).json({ error: 'Not your ticket.' })
+  const { status } = req.body || {}
+  if (!['OPEN', 'IN_PROGRESS', 'RESOLVED'].includes(status)) return res.status(400).json({ error: 'Unknown status.' })
+  ticket.status = status
+  save()
   res.json({ ticket })
 })
 
