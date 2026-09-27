@@ -15,7 +15,14 @@ const app = express()
 // PORT: prefer .env; only fall back if it's missing or empty/0.
 const rawPort = Number(process.env.PORT)
 const PORT = Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 4000
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGINS || 'http://localhost:5173')
+const CLIENT_ORIGINS = (process.env.CLIENT_ORIGINS ||
+  [
+    'https://fresh-bowl-lovat.vercel.app', // the live website
+    'http://localhost:5173', // laptop dev server
+    'https://localhost', // Android app (Capacitor) — used in Phase 5
+    'capacitor://localhost' // iOS app (Capacitor)
+  ].join(',')
+)
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
