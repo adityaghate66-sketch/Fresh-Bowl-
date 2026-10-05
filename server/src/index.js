@@ -1,25 +1,32 @@
 // =====================================================================
 // OOTA BACKEND — SERVER ENTRY POINT
 // =====================================================================
-// Loads environment variables, sets up security middleware (CORS, JSON
-// limits), mounts all API routes under /api and starts listening.
+// Boot order (why it matters):
+//   1. Try to connect to MongoDB Atlas (if MONGODB_URI is set).
+//   2. Seed the demo accounts + indexes (only what's missing).
+//   3. Only then start accepting web requests.
+// If MongoDB is not configured or unreachable → automatic local file
+// database fallback, so development never blocks.
 
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import api from './routes.js'
+import { initStore, storeMode } from './store.js'
+import { seedMongo } from './seed.js'
+import { closeMongo } from './mongo.js'
 
 const app = express()
 
 // ---- Environment ------------------------------------------------------
-// PORT: prefer .env; only fall back if it's missing or empty/0.
 const rawPort = Number(process.env.PORT)
 const PORT = Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 4000
 const CLIENT_ORIGINS = (process.env.CLIENT_ORIGINS ||
   [
     'https://fresh-bowl-lovat.vercel.app', // the live website
     'http://localhost:5173', // laptop dev server
-    'https://localhost', // Android app (Capacitor) — used in Phase 5
+    'http://127.0.0.1:5173', // laptop dev server (alternate)
+    'https://localhost', // Android app (Capacitor)
     'capacitor://localhost' // iOS app (Capacitor)
   ].join(',')
 )
@@ -55,7 +62,39 @@ app.use((err, req, res, next) => {
   res.status(err.message === 'Not allowed by CORS' ? 403 : 500).json({ error: err.message || 'Server error.' })
 })
 
-app.listen(PORT, () => {
-  console.log(`🥗 Oota API running on http://localhost:${PORT}`)
-  console.log(`   Allowed origins: ${CLIENT_ORIGINS.join(', ')}`)
+// ---- Boot: database first, then listen --------------------------------
+async function start() {
+  const mode = await initStore()
+  if (mode === 'mongo') {
+    try {
+      await seedMongo()
+    } catch (err) {
+      console.error('Seeding failed (continuing):', err.message)
+    }
+  } else {
+    console.log('📁 Using local demo file database (server/data/db.json).')
+  }
+
+  const server = app.listen(PORT, () => {
+    console.log(`🥗 Oota API running on http://localhost:${PORT}`)
+    console.log(`   Database: ${storeMode() === 'mongo' ? '🍃 MongoDB Atlas' : '📁 local file (demo)'}`)
+    console.log(`   Allowed origins: ${CLIENT_ORIGINS.join(', ')}`)
+  })
+
+  // Graceful shutdown: stop accepting, close the DB connection cleanly.
+  const shutdown = async () => {
+    console.log('\nShutting down…')
+    server.close(async () => {
+      await closeMongo()
+      process.exit(0)
+    })
+    setTimeout(() => process.exit(0), 3000).unref()
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+start().catch((err) => {
+  console.error('Fatal startup error:', err)
+  process.exit(1)
 })

@@ -3,17 +3,20 @@
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { HashRouter } from 'react-router-dom'
 import App from './App'
 import { AppProvider } from './context/AppContext'
 import './styles.css'
 
+// HashRouter keeps the current screen in the URL after a "#" (e.g. #/home).
+// This makes the app work from ANY host — a dev server, a static file, or
+// the preview panel — without extra server configuration.
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <BrowserRouter>
+    <HashRouter>
       <AppProvider>
         <App />
       </AppProvider>
-    </BrowserRouter>
+    </HashRouter>
   </StrictMode>
 )

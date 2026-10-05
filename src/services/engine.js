@@ -10,7 +10,7 @@
 import { FOOD_ITEMS, MEAL_TYPES } from '../data/foodItems'
 import { PLANS } from '../data/plans'
 import { todayString, addDays, daysBetween } from '../utils/date'
-import { eligibleMeals as rawEligibleMeals } from './menuService'
+import { pickMealForDate } from './menuService'
 
 // ---------------------------------------------------------------
 // SEEDED ACCOUNTS (login with any of these; password: any 4+ chars)
@@ -95,9 +95,10 @@ export function generateOrdersForDate(subscription, preferences, dateString, ski
   const orderMeals = subscription.mealsPerDay
     .filter((mealType) => !skips.some((s) => s.date === dateString && s.mealType === mealType))
     .map((mealType) => {
-      const pool = rawEligibleMeals(preferences, mealType, unavailableFoodIds)
-      // stable pick per date+meal (same logic as menuService)
-      const item = pool.length ? pool[Math.abs(hashString(dateString + mealType)) % pool.length] : null
+      // SINGLE SOURCE OF TRUTH: the order picks the SAME dish the customer
+      // sees on Home and the Daily Menu for this date (keeps every screen
+      // consistent and lets the kitchen trust the menu).
+      const item = pickMealForDate(preferences, mealType, dateString, unavailableFoodIds)
       return item
         ? { mealType, itemId: item.id, name: item.name, emoji: item.emoji, foodType: item.foodType }
         : null
